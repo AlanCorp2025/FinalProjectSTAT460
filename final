@@ -1,0 +1,7 @@
+echo "# FinalProjectSTAT460" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/AlanCorp2025/FinalProjectSTAT460.git
+git push -u origin main
