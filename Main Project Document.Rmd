@@ -1,0 +1,45 @@
+---
+title: "Main Project Document"
+author: "Charlie Argust"
+date: "2025-11-14"
+output: html_document
+---
+
+```{r setup, include=FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fpp3)
+```
+
+## Australian Pharmaceutical Benefits Scheme (PBS) - Time Series Analysis
+
+The PBS dataset from the `fpp3` package contains information regarding Australian's government subsidy scheme for prescription drugs, containing monthly observations from July 1991 to June 2008. This scheme enables Australian citizens to obtain prescription medications at reduced cost, with the Australian government subsidizing the difference. This project aims to explore the time series patterns of prescription costs and exogenous variables that correlate with these observed patterns. Through an analysis of this data, we can build time series models to forecast future subsidy demand and in theory help the government financially plan for subsequent years.
+
+The data is aggregated by 
+
+```{r}
+PBS%>%
+  filter(Month == yearmonth('2008 Jun'))%>%
+  group_by(ATC1, ATC1_desc)%>%
+  summarise(TotalScripts = sum(Scripts),
+            TotalCost = sum(Cost))%>%
+  arrange(desc(TotalScripts))
+```
+
+```{r}
+PBS%>%
+  filter(Month == yearmonth('2008 Jun'),
+         ATC1 %in% c('C', 'N', 'A'))%>%
+  group_by(ATC1, ATC1_desc, ATC2, ATC2_desc)%>%
+  summarise(TotalScripts = sum(Scripts),
+            TotalCost = sum(Cost))%>%
+  arrange(desc(TotalScripts))
+```
+
+```{r}
+PBS%>%
+  filter(ATC2 == 'A10')%>%
+  group_by(ATC2)%>%
+  summarise(Scripts = sum(Scripts))%>%
+  autoplot(Scripts)
+```
+
