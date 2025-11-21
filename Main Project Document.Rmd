@@ -1,7 +1,7 @@
 ---
 title: "Main Project Document"
-author: "Charlie Argust"
-date: "2025-11-14"
+author: "Alan Corp & Charlie Argust"
+date: "2025-11-21"
 output: html_document
 ---
 
@@ -11,6 +11,8 @@ library(fpp3)
 ```
 
 ## Australian Pharmaceutical Benefits Scheme (PBS) - Time Series Analysis
+
+### Project Description and Data
 
 The PBS dataset from the `fpp3` package contains information regarding Australian's 
 government subsidy scheme for prescription drugs, containing monthly observations 
@@ -22,32 +24,102 @@ observed patterns. Through an analysis of this data, we can build time series
 models to forecast future subsidy demand and in theory help the government 
 financially plan for subsequent years.
 
-The data is aggregated by 
+The data is initially aggregated by Concession, Type, ATC1, and ATC2, which are described below:
+
+- `Concession`: 
+    * Concessional - 
+    * General - 
+- `Type`:
+    * Co-payments - 
+    * Safety net - 
+- `ATC1`: 
+    * Concessional - 
+    * General - 
+- `ATC2`:
+    * Co-payments - 
+    * Safety net - 
+
+However, the scope of this project is limited to antidiabetic therapy medications (ATC2 == 'A10'). Hence, we can disaggregate the data to include all Concession types and payment types.
+
+### Data Exploration
+
+```{r}
+data(PBS)
+```
+
 
 ```{r}
 PBS%>%
-  filter(Month == yearmonth('2008 Jun'))%>%
+  filter(year(Month) == 2008)%>%
+  index_by(year = year(Month))%>%
   group_by(ATC1, ATC1_desc)%>%
   summarise(TotalScripts = sum(Scripts),
             TotalCost = sum(Cost))%>%
-  arrange(desc(TotalScripts))
+  arrange(desc(TotalScripts))%>%
+  head(5)
 ```
+
+Prescriptions classified as aiding the Cardiovascular system, nervous system, and Alimentary tract and metabolism made up the largest share of scripts in 2008. 
 
 ```{r}
 PBS%>%
-  filter(Month == yearmonth('2008 Jun'),
-         ATC1 %in% c('C', 'N', 'A'))%>%
-  group_by(ATC1, ATC1_desc, ATC2, ATC2_desc)%>%
-  summarise(TotalScripts = sum(Scripts),
-            TotalCost = sum(Cost))%>%
-  arrange(desc(TotalScripts))
+  filter(ATC1 %in% c('C', 'N', 'A'))
 ```
 
+### Antidiabetic Therapy
+
 ```{r}
-PBS%>%
+antidiabetic_med <- PBS%>%
   filter(ATC2 == 'A10')%>%
-  group_by(ATC2)%>%
-  summarise(Scripts = sum(Scripts))%>%
-  autoplot(Scripts)
+  group_by(ATC2, ATC2_desc)%>%
+  summarise(TotalPrescriptions = sum(Scripts),
+            TotalSubsidy = sum(Cost))
+
+antidiabetic_med
 ```
 
+```{r}
+summary(antidiabetic_med[,c('TotalPrescriptions', 'TotalSubsidy')])
+```
+
+```{r}
+antidiabetic_med <- antidiabetic_med%>%
+  mutate(TotalPrescriptions = TotalPrescriptions / 1e+3, # transform scripts to thousands
+         TotalSubsidy = TotalSubsidy / 1e+6) # subsidy to millions
+  
+mean(antidiabetic_med$TotalPrescriptions); mean(antidiabetic_med$TotalSubsidy)
+```
+
+### Visualizing Time Series
+
+```{r}
+antidiabetic_med%>%
+  autoplot(TotalSubsidy) # log transformation works to stabilize variance
+```
+
+```{r}
+antidiabetic_med%>%
+  select(Month, TotalPrescriptions)%>%
+  gg_subseries()
+```
+
+
+```{r}
+monthly_scripts <- antidiabetic_med%>%
+  index_by(year = year(Month))%>%
+  summarise(scripts_per_month = sum(TotalPrescriptions) / length(Month))
+
+ggplot(monthly_scripts, aes(year, scripts_per_month)) + geom_line()
+```
+
+The average number of prescriptions subsidized by the PBS per month increases continuously until 2008. This aligns with the continuous increase in diabetes prevalence, however diabetes prevalence does not decrease in 2008. Additionally, the mortality rate in Australia for diabetes patients reached a 20-year high. 
+
+## References
+
+- About PBS: https://www.pbs.gov.au/info/about-the-pbs
+
+- Medicare: https://www.health.gov.au/topics/medicare/about
+
+- page 31: https://www.pbs.gov.au/statistics/2012-2013-files/expenditure-and-prescriptions-12-months-to-30-06-2013.pdf
+
+- seasonality in PBS data and data description: https://nceph.anu.edu.au/files/Guide_to_Using_PBS_Data_20131125_0.pdf?utm_source=chatgpt.com
