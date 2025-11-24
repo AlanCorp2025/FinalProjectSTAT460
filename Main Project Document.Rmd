@@ -7,7 +7,10 @@ output: html_document
 
 ```{r setup, include=FALSE, message = FALSE, warning = FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 library(fpp3)
+library(Metrics) # rmse calculation
+library(glue) # formatted strings
 ```
 
 ## Australian Pharmaceutical Benefits Scheme (PBS) - Time Series Analysis
@@ -68,7 +71,7 @@ PBS%>%
 
 ### Antidiabetic Therapy
 
-```{r}
+```{r filtering and aggregating antidiabetic meds}
 antidiabetic_med <- PBS%>%
   filter(ATC2 == 'A10')%>%
   group_by(ATC2, ATC2_desc)%>%
@@ -82,7 +85,7 @@ antidiabetic_med
 summary(antidiabetic_med[,c('TotalPrescriptions', 'TotalSubsidy')])
 ```
 
-```{r}
+```{r reducing scale of values}
 antidiabetic_med <- antidiabetic_med%>%
   mutate(TotalPrescriptions = TotalPrescriptions / 1e+3, # transform scripts to thousands
          TotalSubsidy = TotalSubsidy / 1e+6) # subsidy to millions
@@ -113,6 +116,83 @@ ggplot(monthly_scripts, aes(year, scripts_per_month)) + geom_line()
 ```
 
 The average number of prescriptions subsidized by the PBS per month increases continuously until 2008. This aligns with the continuous increase in diabetes prevalence, however diabetes prevalence does not decrease in 2008. Additionally, the mortality rate in Australia for diabetes patients reached a 20-year high. 
+
+### Fitting Models
+
+Before fitting models, we will split the data into 90% train and 10% test, so we can compare the model forecasts against the true values.
+
+```{r}
+subsidy <- antidiabetic_med%>%
+  ungroup(ATC2)%>%
+  index_by(Month)%>%
+  select(Month, TotalSubsidy)
+
+subsidy
+```
+
+
+```{r splitting into train and test}
+split_idx <- as.integer(0.9 * nrow(subsidy))
+
+train = subsidy[1:(split_idx - 1),]
+test = subsidy[split_idx:nrow(subsidy),]
+
+nrow(train); nrow(test)
+```
+
+#### Simple Baseline Models
+
+```{r}
+baseline_fits <- train%>%
+  model(
+    naive = NAIVE(TotalSubsidy),
+    snaive = SNAIVE(TotalSubsidy),
+    mean = MEAN(TotalSubsidy),
+    drift = NAIVE(TotalSubsidy ~ drift())
+  )
+
+baseline_forecasts <- baseline_fits%>%
+  forecast(h = 22)
+```
+
+```{r}
+baseline_forecasts%>%
+  ggplot(aes(Month, .mean, color = .model)) + geom_line(size = 0.8) +
+  autolayer(train, TotalSubsidy, size = 0.8) +
+  autolayer(test, TotalSubsidy, alpha = 0.5, linetype = 'dashed', color = 'black') + 
+  labs(title = 'Simple forecasts of monthly subsidy', 
+       subtitle = 'Antidiabetic therapy prescriptions',
+       y = '$AUD (Millions)') + guides(colour = guide_legend(title = "Forecast"))
+```
+
+```{r}
+models <- baseline_forecasts[,c('.model', '.mean')]
+actual_values = test$TotalSubsidy
+
+for (model in unique(models$.model)) {
+  
+  current_model <- models%>%
+    filter(.model == model)
+  
+  error = rmse(actual_values, current_model$.mean)
+    print(glue("{model} forecast | RMSE: {error}"))
+}
+```
+
+#### Regression Models
+
+```{r}
+regression_fit <- train%>%
+  model(
+    TSLM(log(TotalSubsidy) ~ trend() + season())
+  )
+
+regression_fit%>%
+  forecast(h = 22)%>%
+  autoplot(train, level = NULL) +
+  autolayer(test, color = 'red', size = 0.75, linetype = 'dashed')
+```
+
 
 ## References
 
