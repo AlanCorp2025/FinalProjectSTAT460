@@ -112,9 +112,13 @@ with the subsidy. This project will be mainly focusing on the subsidy.
 
 ```{r}
 antidiabetic_med%>%
-  autoplot(TotalSubsidy) # log transformation works to stabilize variance
+  autoplot(TotalPrescriptions) # log transformation works to stabilize variance
 ```
 
+```{r}
+antidiabetic_med%>%
+  autoplot(TotalSubsidy)
+```
 The time series plot of total subsidies provided for antidiabetic therapy drug prescription reveals strong trend and seasonality from 1991 to 2008. Monthly subsidies show a steady increase, with a slight quadratic trend indicating a compounding effect. Subsidies also show a clear peak in January, which is followed by an immediate descent into a trough in February. The seasonal plot below confirms this:
 
 ```{r}
@@ -157,7 +161,7 @@ ggplot(diabetes_long, aes(x = years, y = value)) +
   facet_wrap(~statistic, ncol = 1, scales = 'free_y')
 ```
 
-```{r}
+```{r, eval = FALSE}
 ndss_data <- as.data.frame(
   list(
     fiscal_year <- seq(1992, 2008, by = 1),
@@ -166,6 +170,13 @@ ndss_data <- as.data.frame(
 )
 
 #non_insulin_using <- c(29476,  42643,  58,300 76,772  98,810 128,162  161,678  202,549 246,805  298,599  353,825  409,150 466,409 525,365 588,580 622,340 577,567 
+```
+
+
+### Autocorrelation plot
+
+```{r}
+autoplot(ACF(antidiabetic_med, TotalSubsidy))
 ```
 
 
