@@ -1,0 +1,469 @@
+---
+title: "Main Project Document"
+author: "Alan Corp & Charlie Argust"
+date: "2025-11-21"
+output: html_document
+---
+
+```{r setup, include=FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(fpp3)
+library(Metrics) # rmse calculation
+library(glue) # formatted strings
+library(fable)
+library(feasts)
+library(dplyr)
+library(Metrics)
+```
+
+## Australian Pharmaceutical Benefits Scheme (PBS) - Time Series Analysis
+
+### Project Description and Data
+
+The PBS dataset from the `fpp3` package contains information regarding Australian's 
+government subsidy scheme for prescription drugs, containing monthly observations 
+from July 1991 to June 2008. This scheme enables Australian citizens to obtain 
+prescription medications at reduced cost, with the Australian government 
+subsidizing the difference. This project aims to explore the time series 
+patterns of prescription costs and exogenous variables that correlate with these 
+observed patterns. Through an analysis of this data, we can build time series 
+models to forecast future subsidy demand and in theory help the government 
+financially plan for subsequent years.
+
+The data is initially aggregated by Concession, Type, ATC1, and ATC2, which are described below:
+
+- `Concession`: patient type
+    * Concessional - Patients including pensioners, unemployed, dependents, and 
+    other card holders that also have a Medicare card. Concessional patients are 
+    subject to entitlements, including lower co-payments.
+    * General - Patients that have a Medicare card, but do not meet the above
+    criteria.
+- `Type`: payment type
+    * Co-payments - Fixed amount that a customer pays out of pocket. Co-payments are
+    made until a patient's total script expenditure hits a threshold, at which point
+    safety net subsidies provide additional discounts.
+    * Safety net - Prescriptions obtained after a patient hits a script expenditure 
+    threshold
+    
+The ATC (Anatomical Therapeutic Chemical) system is a hierarchical method of classifying 
+drugs based on their properties, each level increasing in specificity [1]. The `PBS` 
+dataset provides the first 2 levels:
+
+- `ATC1`: Anatomical main group
+    * e.g. 'Cardiovascular system', 'Nervous system', 'Alimentary tract & metabolism'
+- `ATC2`: Therapeutic subgroup
+    * e.g. 'Drugs for acid-related disorders', 'Psychoanaleptics', 'Antidiabetic therapy'
+
+The scope of this project includes all antidiabetic therapy drug prescriptions (ATC2 == 'A10'). Hence, we can disaggregate the data to include all `Concession` types and payment (`Type`) types.
+
+### Data Exploration
+
+```{r}
+PBS%>%
+  filter(year(Month) == 2008)%>%
+  index_by(year = year(Month))%>%
+  group_by(ATC1, ATC1_desc)%>%
+  summarise(TotalScripts = sum(Scripts),
+            TotalCost = sum(Cost))%>%
+  arrange(desc(TotalScripts))%>%
+  head(5)
+```
+
+Prescriptions classified as aiding the Cardiovascular system, nervous system, and Alimentary tract and metabolism made up the largest share of scripts in 2008. 
+
+```{r}
+PBS%>%
+  as_tibble()%>%
+  filter(ATC1 %in% c('C', 'N', 'A'))%>%
+  group_by(ATC2_desc)%>%
+  summarise(Scripts = sum(Scripts))%>%
+  arrange(desc(Scripts))
+```
+
+### Antidiabetic Therapy
+
+```{r filtering and aggregating antidiabetic for antidiabetic scripts}
+antidiabetic_med <- PBS%>%
+  filter(ATC2 == 'A10')%>%
+  group_by(ATC2, ATC2_desc)%>%
+  summarise(TotalPrescriptions = sum(Scripts),
+            TotalSubsidy = sum(Cost))
+
+antidiabetic_med
+```
+
+```{r}
+summary(antidiabetic_med[,c('TotalPrescriptions', 'TotalSubsidy')])
+```
+
+```{r reducing scale of values}
+antidiabetic_med <- antidiabetic_med%>%
+  mutate(TotalPrescriptions = TotalPrescriptions / 1e+3, # transform scripts to thousands
+         TotalSubsidy = TotalSubsidy / 1e+6) # subsidy to millions
+  
+mean(antidiabetic_med$TotalPrescriptions); mean(antidiabetic_med$TotalSubsidy)
+```
+
+```{r}
+cor(antidiabetic_med$TotalPrescriptions, antidiabetic_med$TotalSubsidy)
+```
+
+As one would expect, the number of dispensed prescriptions is highly correlated
+with the subsidy. This project will be mainly focusing on the subsidy.
+
+### Visualizing Time Series
+
+```{r}
+antidiabetic_med%>%
+  autoplot(TotalPrescriptions) # log transformation works to stabilize variance
+```
+
+```{r}
+antidiabetic_med%>%
+  autoplot(TotalSubsidy)
+```
+The time series plot of total subsidies provided for antidiabetic therapy drug prescription reveals strong trend and seasonality from 1991 to 2008. Monthly subsidies show a steady increase, with a slight quadratic trend indicating a compounding effect. Subsidies also show a clear peak in January, which is followed by an immediate descent into a trough in February. The seasonal plot below confirms this:
+
+```{r}
+antidiabetic_med%>%
+  select(Month, TotalSubsidy)%>%
+  gg_subseries()
+```
+
+Considering the need for antidiabetic drugs doesn't vary from month-to-month, one might wonder why seasonality is present in this data. The data represents the frequency with which prescriptions are dispensed, not the frequency that the drugs are actually used. According to the research I've found, peaks in prescriptions dispenses and total subsidies typically appear in December rather than January [2]. This is due to the safety net being reached, so December is the month where patients can stockpile their prescriptions at a cheaper price (hence a higher government subsidy) before it resets at the beginning of a new year. I suspect that the 1-month discrepancy between researched PBS seasonality and the seasonality present in the data shown previously is due to a lag from the date that pharmacies dispense the drug and the date that a claim for reimbursement is processed.
+
+### 2008 Shift in Insulin Usage
+
+```{r}
+monthly_scripts <- antidiabetic_med%>%
+  index_by(year = year(Month))%>%
+  summarise(scripts_per_month = sum(TotalPrescriptions) / length(Month))
+
+ggplot(monthly_scripts, aes(year, scripts_per_month)) + geom_line()
+```
+
+The average number of prescriptions subsidized by the PBS per month increases continuously until 2008. This aligns with the general increasing trend in diabetes prevalence, however diabetes prevalence does not decrease in 2008. Additionally, the mortality rate in Australia for diabetes patients reached a 20-year high. 
+
+```{r}
+diabetes_data <- as.data.frame(
+  list(
+    years = seq(2000, 2013, by = 1),
+    prevalence_pct = c(2.4, 2.7, 2.9, 3.1, 3.3, 3.5, 3.6, 3.8, 4.0, 4.1, 4.2, 4.3, 4.4, 4.4),
+    deaths_per_100k = c(54.3, 53.5, 57.8, 56.2, 56.5, 55.4, 58.3, 57.8, 61.6,59.3, 57.6, 58.8, 57.0, 55.7)
+    )
+)
+
+diabetes_long <- pivot_longer(diabetes_data,
+             cols = c(prevalence_pct, deaths_per_100k),
+             names_to = 'statistic',
+             values_to = 'value')
+
+ggplot(diabetes_long, aes(x = years, y = value)) + 
+  geom_line(color = 'blue') + 
+  geom_point(color = 'red') + 
+  facet_wrap(~statistic, ncol = 1, scales = 'free_y')
+```
+
+```{r, eval = FALSE}
+ndss_data <- as.data.frame(
+  list(
+    fiscal_year <- seq(1992, 2008, by = 1),
+    non_insulin_using = c()
+  )
+)
+
+#non_insulin_using <- c(29476,  42643,  58,300 76,772  98,810 128,162  161,678  202,549 246,805  298,599  353,825  409,150 466,409 525,365 588,580 622,340 577,567 
+```
+
+
+### Autocorrelation plot
+
+```{r}
+autoplot(ACF(antidiabetic_med, TotalSubsidy))
+```
+
+
+### Fitting Models
+
+Before fitting models, we will split the data into 90% train and 10% test, so we can compare the model forecasts against the true values.
+
+```{r}
+subsidy <- antidiabetic_med%>%
+  ungroup(ATC2)%>%
+  index_by(Month)%>%
+  select(Month, TotalSubsidy)
+
+subsidy
+```
+
+
+```{r splitting into train and test}
+split_idx <- as.integer(0.9 * nrow(subsidy))
+
+train = subsidy[1:(split_idx - 1),]
+test = subsidy[split_idx:nrow(subsidy),]
+
+nrow(train); nrow(test)
+```
+
+#### Simple Baseline Models
+
+```{r}
+baseline_fits <- train%>%
+  model(
+    naive = NAIVE(TotalSubsidy),
+    snaive = SNAIVE(TotalSubsidy),
+    mean = MEAN(TotalSubsidy),
+    drift = NAIVE(TotalSubsidy ~ drift())
+  )
+
+baseline_forecasts <- baseline_fits%>%
+  forecast(h = 22)
+```
+
+```{r}
+baseline_forecasts%>%
+  ggplot(aes(Month, .mean, color = .model)) + geom_line(size = 0.8) +
+  autolayer(train, TotalSubsidy, size = 0.8) +
+  autolayer(test, TotalSubsidy, alpha = 0.5, linetype = 'dashed', color = 'black') + 
+  labs(title = 'Simple forecasts of monthly subsidy', 
+       subtitle = 'Antidiabetic therapy prescriptions',
+       y = '$AUD (Millions)') + guides(colour = guide_legend(title = "Forecast"))
+```
+
+```{r}
+models <- baseline_forecasts[,c('.model', '.mean')]
+actual_values = test$TotalSubsidy
+
+for (model in unique(models$.model)) {
+  
+  current_model <- models%>%
+    filter(.model == model)
+  
+  error = rmse(actual_values, current_model$.mean)
+    print(glue("{model} forecast | RMSE: {error}"))
+}
+```
+
+#### Regression Models
+
+```{r}
+regression_fit <- train%>%
+  model(
+    TSLM(log(TotalSubsidy) ~ trend() + season())
+  )
+
+regression_fit%>%
+  forecast(h = 22)%>%
+  autoplot(train, level = NULL) +
+  autolayer(test, color = 'red', size = 0.75, linetype = 'dashed')
+```
+
+#### Check Stationarity
+
+```{r}
+# Stationarity tests — KPSS and ADF
+train %>% features(TotalSubsidy, unitroot_kpss)
+train %>% features(TotalSubsidy, unitroot_ndiffs)
+train %>% features(TotalSubsidy, unitroot_nsdiffs)
+
+```
+
+The KPSS test suggests non-stationarity (p<.05). The ndiffs and the nsdiffs indicate a first-order differencing is needed but seasonal differencing is not required. 
+
+#### Seasonal and Non-Seasonal Differencing
+
+```{r, warning=FALSE}
+# reconstruct as a monthly tsibble
+subsidy_ts <- PBS %>%
+  filter(ATC2 == "A10") %>%
+  index_by(Month) %>%
+  summarise(TotalSubsidy = sum(Cost) / 1e6) %>%   # millions scale
+  as_tsibble(index = Month)
+
+subsidy_ts %>%
+  model(STL(TotalSubsidy)) %>%
+  components() %>%
+  autoplot()
+```
+
+#### ACF/PACF Plots
+
+```{r}
+diff_subsidy <- subsidy_ts %>%
+  mutate(
+    diff_1 = difference(TotalSubsidy),
+    diff_12 = difference(TotalSubsidy, lag = 12),
+    diff_both = difference(diff_1, lag = 12)
+  ) %>%
+  filter(!is.na(diff_both))
+
+
+# ACF/PACF for raw series
+ACF(train, TotalSubsidy) %>% autoplot()
+PACF(train, TotalSubsidy) %>% autoplot()
+
+# ACF/PACF after differencing
+ACF(diff_subsidy, diff_both) %>% autoplot()
+PACF(diff_subsidy, diff_both) %>% autoplot()
+```
+The ACF shows strong seasonal spikes at lag 12 and slow decay, supporting SARIMA.
+PACF suggests possible AR(1) or AR(2) structure after differencing.
+
+#### Fit ARIMA/SARIMA Models
+
+```{r}
+# Fit an automatically selected ARIMA
+fit_auto <- train %>%
+  model(ARIMA(TotalSubsidy))
+
+report(fit_auto)
+
+# Fit a manually specified SARIMA based on ACF/PACF
+fit_manual <- train %>%
+  model(
+    sarima = ARIMA(TotalSubsidy ~ pdq(1,1,1) + PDQ(0,1,1))
+  )
+
+report(fit_manual)
+
+```
+
+#### Residual Diagnostics
+
+```{r}
+fit_auto <- subsidy_ts %>%
+  model(ARIMA(TotalSubsidy))
+fit_manual <- subsidy_ts %>%
+  model(ARIMA(TotalSubsidy ~ pdq(0,1,1) + PDQ(0,1,1)))
+
+
+# Residual diagnostics for both models
+gg_tsresiduals(fit_auto)
+gg_tsresiduals(fit_manual)
+
+# Ljung-Box tests
+
+# Automatic ARIMA
+augment(fit_auto) %>%
+  features(.resid, ljung_box, lag = 24, dof = 2)
+
+# Manual ARIMA
+augment(fit_manual) %>%
+  features(.resid, ljung_box, lag = 24, dof = 2)
+
+```
+
+#### Forecasting for ARIMA Models
+
+```{r}
+fc_auto <- fit_auto %>% forecast(h = nrow(test))
+fc_manual <- fit_manual %>% forecast(h = nrow(test))
+
+autoplot(fc_auto, train) +
+  autolayer(test, color="red", linetype="dashed")
+
+```
+```{r}
+# 1. Refit ARIMA models using the TRAIN data ONLY
+fit_auto <- train %>%
+  model(ARIMA(TotalSubsidy))
+
+fit_manual <- train %>%
+  model(ARIMA(TotalSubsidy ~ pdq(1,1,1) + PDQ(0,1,1)))
+
+# 2. Forecast horizon = size of test set
+h <- nrow(test)
+
+fc_auto   <- fit_auto %>% forecast(h = h)
+fc_manual <- fit_manual %>% forecast(h = h)
+
+# 3. Combine all forecasts into fc_all
+fc_all <- bind_rows(
+  baseline_forecasts %>% mutate(.model = as.character(.model)),
+  fc_auto        %>% mutate(.model = "auto_arima"),
+  fc_manual      %>% mutate(.model = "manual_arima")
+)
+
+```
+
+#### Compare Model Accuracies
+
+```{r}
+actual_values <- test$TotalSubsidy
+
+#list of unique models in forecast object
+model_names <- unique(fc_all$.model)
+
+# Create an empty data frame to store accuracy results
+accuracy_results <- data.frame(
+  Model = character(),
+  RMSE = numeric(),
+  MAE = numeric(),
+  MAPE = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each model to calculate metrics
+for (model_name in model_names) {
+  predicted_values <- fc_all %>%
+    filter(.model == model_name) %>%
+    pull(.mean)
+  
+  # Accuracy metrics
+  rmse_val <- rmse(actual_values, predicted_values)
+  mae_val  <- mae(actual_values, predicted_values)
+  mape_val <- mape(actual_values, predicted_values)
+  
+  # Add results to the data frame
+  accuracy_results <- rbind(accuracy_results,
+                            data.frame(Model = model_name,
+                                       RMSE = rmse_val,
+                                       MAE = mae_val,
+                                       MAPE = mape_val))
+}
+
+accuracy_results
+
+
+```
+
+The best model is drift with the lowest RMSE/MAPE for this monthly seasonal data.
+
+#### Plotting Final Model/Residuals
+
+```{r}
+#final_fit <- fit_manual  # choose whichever has best accuracy
+
+#final_fit %>% forecast(h = 24) %>% autoplot(subsidy)
+#gg_tsresiduals(final_fit %>% select(`ARIMA(TotalSubsidy ~ pdq(1, 1, 1) + PDQ(0, 1, 1))`))
+
+
+
+
+
+```
+
+#### Additional Seasonal Decomposition
+
+```{r}
+#subsidy %>%
+#  model(STL(TotalSubsidy ~ season(window = "periodic"))) %>%
+#  components() %>%
+#  autoplot()
+```
+
+
+## References
+
+[1] ATC classification system: https://atcddd.fhi.no/atc/structure_and_principles/
+
+- About PBS: https://www.pbs.gov.au/info/about-the-pbs
+
+- Medicare: https://www.health.gov.au/topics/medicare/about
+
+- page 31: https://www.pbs.gov.au/statistics/2012-2013-files/expenditure-and-prescriptions-12-months-to-30-06-2013.pdf
+
+- seasonality in PBS data and data description: 
+[2] https://pmc.ncbi.nlm.nih.gov/articles/PMC4630883/
