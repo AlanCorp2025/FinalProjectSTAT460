@@ -366,10 +366,6 @@ autoplot(fc_auto, train) +
 
 ```
 ```{r}
-# --------------------------------------------
-# REBUILD AUTO + MANUAL + BASELINE FORECASTS
-# --------------------------------------------
-
 # 1. Refit ARIMA models using the TRAIN data ONLY
 fit_auto <- train %>%
   model(ARIMA(TotalSubsidy))
@@ -438,10 +434,13 @@ The best model is drift with the lowest RMSE/MAPE for this monthly seasonal data
 #### Plotting Final Model/Residuals
 
 ```{r}
-final_fit <- fit_manual  # choose whichever has best accuracy
+#final_fit <- fit_manual  # choose whichever has best accuracy
 
-final_fit %>% forecast(h = 24) %>% autoplot(subsidy)
-gg_tsresiduals(final_fit %>% select(`ARIMA(TotalSubsidy ~ pdq(1, 1, 1) + PDQ(0, 1, 1))`))
+#final_fit %>% forecast(h = 24) %>% autoplot(subsidy)
+#gg_tsresiduals(final_fit %>% select(`ARIMA(TotalSubsidy ~ pdq(1, 1, 1) + PDQ(0, 1, 1))`))
+
+
+
 
 
 ```
@@ -449,10 +448,10 @@ gg_tsresiduals(final_fit %>% select(`ARIMA(TotalSubsidy ~ pdq(1, 1, 1) + PDQ(0, 
 #### Additional Seasonal Decomposition
 
 ```{r}
-subsidy %>%
-  model(STL(TotalSubsidy ~ season(window = "periodic"))) %>%
-  components() %>%
-  autoplot()
+#subsidy %>%
+#  model(STL(TotalSubsidy ~ season(window = "periodic"))) %>%
+#  components() %>%
+#  autoplot()
 ```
 
 
