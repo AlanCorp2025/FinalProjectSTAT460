@@ -11,6 +11,10 @@ knitr::opts_chunk$set(echo = TRUE)
 library(fpp3)
 library(Metrics) # rmse calculation
 library(glue) # formatted strings
+library(fable)
+library(feasts)
+library(dplyr)
+library(Metrics)
 ```
 
 ## Australian Pharmaceutical Benefits Scheme (PBS) - Time Series Analysis
@@ -254,6 +258,201 @@ regression_fit%>%
   forecast(h = 22)%>%
   autoplot(train, level = NULL) +
   autolayer(test, color = 'red', size = 0.75, linetype = 'dashed')
+```
+
+#### Check Stationarity
+
+```{r}
+# Stationarity tests — KPSS and ADF
+train %>% features(TotalSubsidy, unitroot_kpss)
+train %>% features(TotalSubsidy, unitroot_ndiffs)
+train %>% features(TotalSubsidy, unitroot_nsdiffs)
+
+```
+
+The KPSS test suggests non-stationarity (p<.05). The ndiffs and the nsdiffs indicate a first-order differencing is needed but seasonal differencing is not required. 
+
+#### Seasonal and Non-Seasonal Differencing
+
+```{r, warning=FALSE}
+# reconstruct as a monthly tsibble
+subsidy_ts <- PBS %>%
+  filter(ATC2 == "A10") %>%
+  index_by(Month) %>%
+  summarise(TotalSubsidy = sum(Cost) / 1e6) %>%   # millions scale
+  as_tsibble(index = Month)
+
+subsidy_ts %>%
+  model(STL(TotalSubsidy)) %>%
+  components() %>%
+  autoplot()
+```
+
+#### ACF/PACF Plots
+
+```{r}
+diff_subsidy <- subsidy_ts %>%
+  mutate(
+    diff_1 = difference(TotalSubsidy),
+    diff_12 = difference(TotalSubsidy, lag = 12),
+    diff_both = difference(diff_1, lag = 12)
+  ) %>%
+  filter(!is.na(diff_both))
+
+
+# ACF/PACF for raw series
+ACF(train, TotalSubsidy) %>% autoplot()
+PACF(train, TotalSubsidy) %>% autoplot()
+
+# ACF/PACF after differencing
+ACF(diff_subsidy, diff_both) %>% autoplot()
+PACF(diff_subsidy, diff_both) %>% autoplot()
+```
+The ACF shows strong seasonal spikes at lag 12 and slow decay, supporting SARIMA.
+PACF suggests possible AR(1) or AR(2) structure after differencing.
+
+#### Fit ARIMA/SARIMA Models
+
+```{r}
+# Fit an automatically selected ARIMA
+fit_auto <- train %>%
+  model(ARIMA(TotalSubsidy))
+
+report(fit_auto)
+
+# Fit a manually specified SARIMA based on ACF/PACF
+fit_manual <- train %>%
+  model(
+    sarima = ARIMA(TotalSubsidy ~ pdq(1,1,1) + PDQ(0,1,1))
+  )
+
+report(fit_manual)
+
+```
+
+#### Residual Diagnostics
+
+```{r}
+fit_auto <- subsidy_ts %>%
+  model(ARIMA(TotalSubsidy))
+fit_manual <- subsidy_ts %>%
+  model(ARIMA(TotalSubsidy ~ pdq(0,1,1) + PDQ(0,1,1)))
+
+
+# Residual diagnostics for both models
+gg_tsresiduals(fit_auto)
+gg_tsresiduals(fit_manual)
+
+# Ljung-Box tests
+
+# Automatic ARIMA
+augment(fit_auto) %>%
+  features(.resid, ljung_box, lag = 24, dof = 2)
+
+# Manual ARIMA
+augment(fit_manual) %>%
+  features(.resid, ljung_box, lag = 24, dof = 2)
+
+```
+
+#### Forecasting for ARIMA Models
+
+```{r}
+fc_auto <- fit_auto %>% forecast(h = nrow(test))
+fc_manual <- fit_manual %>% forecast(h = nrow(test))
+
+autoplot(fc_auto, train) +
+  autolayer(test, color="red", linetype="dashed")
+
+```
+```{r}
+# --------------------------------------------
+# REBUILD AUTO + MANUAL + BASELINE FORECASTS
+# --------------------------------------------
+
+# 1. Refit ARIMA models using the TRAIN data ONLY
+fit_auto <- train %>%
+  model(ARIMA(TotalSubsidy))
+
+fit_manual <- train %>%
+  model(ARIMA(TotalSubsidy ~ pdq(1,1,1) + PDQ(0,1,1)))
+
+# 2. Forecast horizon = size of test set
+h <- nrow(test)
+
+fc_auto   <- fit_auto %>% forecast(h = h)
+fc_manual <- fit_manual %>% forecast(h = h)
+
+# 3. Combine all forecasts into fc_all
+fc_all <- bind_rows(
+  baseline_forecasts %>% mutate(.model = as.character(.model)),
+  fc_auto        %>% mutate(.model = "auto_arima"),
+  fc_manual      %>% mutate(.model = "manual_arima")
+)
+
+```
+
+#### Compare Model Accuracies
+
+```{r}
+actual_values <- test$TotalSubsidy
+
+#list of unique models in forecast object
+model_names <- unique(fc_all$.model)
+
+# Create an empty data frame to store accuracy results
+accuracy_results <- data.frame(
+  Model = character(),
+  RMSE = numeric(),
+  MAE = numeric(),
+  MAPE = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop over each model to calculate metrics
+for (model_name in model_names) {
+  predicted_values <- fc_all %>%
+    filter(.model == model_name) %>%
+    pull(.mean)
+  
+  # Accuracy metrics
+  rmse_val <- rmse(actual_values, predicted_values)
+  mae_val  <- mae(actual_values, predicted_values)
+  mape_val <- mape(actual_values, predicted_values)
+  
+  # Add results to the data frame
+  accuracy_results <- rbind(accuracy_results,
+                            data.frame(Model = model_name,
+                                       RMSE = rmse_val,
+                                       MAE = mae_val,
+                                       MAPE = mape_val))
+}
+
+accuracy_results
+
+
+```
+
+The best model is drift with the lowest RMSE/MAPE for this monthly seasonal data.
+
+#### Plotting Final Model/Residuals
+
+```{r}
+final_fit <- fit_manual  # choose whichever has best accuracy
+
+final_fit %>% forecast(h = 24) %>% autoplot(subsidy)
+gg_tsresiduals(final_fit %>% select(`ARIMA(TotalSubsidy ~ pdq(1, 1, 1) + PDQ(0, 1, 1))`))
+
+
+```
+
+#### Additional Seasonal Decomposition
+
+```{r}
+subsidy %>%
+  model(STL(TotalSubsidy ~ season(window = "periodic"))) %>%
+  components() %>%
+  autoplot()
 ```
 
 
